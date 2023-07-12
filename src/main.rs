@@ -29,6 +29,22 @@ use plonky2_field::goldilocks_field::GoldilocksField;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Instant;
+
+
+pub const SK: [u8; 32] = [
+    185, 10, 87, 193, 26, 196, 107, 38,
+    237, 247, 148, 9, 99, 177, 16, 116,
+    135, 198, 46, 234, 142, 178, 49, 146,
+    187, 65, 253, 154, 169, 159, 190, 48
+];
+
+pub const PK: [u8; 32] = [
+    107, 219, 42, 83, 4, 43, 194, 65,
+    67, 246, 71, 223, 124, 211, 133, 207,
+    162, 110, 110, 191, 62, 47, 166, 76,
+    103, 30, 211, 10, 101, 204, 163, 142
+];
 
 type ProofTuple<F, C, const D: usize> = (
     ProofWithPublicInputs<F, C, D>,
@@ -188,6 +204,93 @@ fn benchmark() -> Result<()> {
     Ok(())
 }
 
+fn benchmark_2() -> Result<()>{
+    const D: usize = 2;
+    type C = PoseidonGoldilocksConfig;
+    type F = <C as GenericConfig<D>>::F;
+    let config = CircuitConfig::standard_recursion_config();
+
+    println!("Benchmark for 32 EdDSA25519 signatures");
+
+    //let sk: SecretKey = SecretKey::from_bytes(&SK).unwrap();
+    //let public_key: PublicKey = PublicKey::from_bytes(&PK).unwrap();
+
+    let mut array_keypair : [u8; KEYPAIR_LENGTH] = [0; KEYPAIR_LENGTH];
+    for i in 0..32{
+        array_keypair[i] = SK[i];
+        array_keypair[i + 32] = PK[i];
+    }
+
+    let keypair: Keypair = Keypair::from_bytes(&array_keypair).unwrap();
+
+
+    let message: &[u8] = b"Message1";
+
+    let mut collection_messages: Vec<[u8; 32]> = vec![];
+    let mut collection_signatures: Vec<[u8; 64]> = vec![];
+
+    for i in 0..5{
+        let mut msg = [0; 32];
+        msg[..message.len()].copy_from_slice(message);
+        msg[message.len()] = i;
+        let signature: Signature = keypair.sign(&msg);
+        collection_messages.push(msg);
+        collection_signatures.push(signature.to_bytes());
+    }
+
+    //let proofs:Vec<prove_ed25519()> = vec![];
+    let now = Instant::now();
+    let proof_zero = prove_ed25519(
+        &collection_messages[0],
+        &collection_signatures[0],
+        &PK
+    ).expect("prove error");
+
+    let proof_one = prove_ed25519(
+        &collection_messages[1],
+        &collection_signatures[1],
+        &PK
+    ).expect("prove error");
+
+    let mut middle = recursive_proof::<F, C, C, D>(&proof_zero, Some(proof_one), &config, None)?;
+
+    println!("Here the recursion starts");
+    for i in 2..5 {
+        // Recursively verify the proof
+        println!("Here {}",i);
+        let proof_i = prove_ed25519(
+            &collection_messages[i],
+            &collection_signatures[i],
+            &PK
+        );
+        middle = recursive_proof::<F, C, C, D>(&middle, Some(proof_i.unwrap()), &config, None)?;
+        //middle = recursive_proof::<F, C, C, D>(&proof_i.unwrap(), Some(middle), &config, None)?;
+        //let (_, _, cd) = &middle;
+        //info!(
+        //    "Single recursion proof degree {} = 2^{}",
+        //    cd.degree(),
+        //    cd.degree_bits()
+        //);
+    }
+    // Add a second layer of recursion to shrink the proof size further
+
+    let outer = recursive_proof::<F, C, C, D>(&middle, None, &config, None)?;
+    let (_, _, cd) = &outer;
+    info!(
+                "Double recursion proof degree {} = 2^{}",
+                cd.degree(),
+                cd.degree_bits()
+    );
+
+
+    let elapsed = now.elapsed();
+    println!("Generating proof took : {:.2?}", elapsed);
+
+    Ok(())
+}
+
+
+
 /// Test serialization and print some size info.
 fn test_serialization<F: RichField + Extendable<D>, C: GenericConfig<D, F = F>, const D: usize>(
     proof: &ProofWithPublicInputs<F, C, D>,
@@ -254,7 +357,11 @@ fn main() -> Result<()> {
     if args.benchmark == 1 {
         // Run the benchmark
         benchmark()
-    } else {
+    }
+    else if args.benchmark == 2 {
+        benchmark_2()
+    }
+    else {
         if args.sig.is_none() || args.pk.is_none() || args.msg.is_none() {
             println!("The required arguments were not provided: --msg MSG_IN_HEX  --pk PUBLIC_KEY_IN_HEX  --sig SIGNATURE_IN_HEX");
             return Ok(());
